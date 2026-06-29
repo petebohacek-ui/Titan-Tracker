@@ -5,3 +5,5 @@ dist/
 *.local
 *.log
 coverage/
+
+**/.git.repo-backup/

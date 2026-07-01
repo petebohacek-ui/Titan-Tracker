@@ -1,0 +1,419 @@
+{
+  "generatedAt": "2026-07-01T15:13:20.735Z",
+  "results": [
+    {
+      "workoutCount": 100,
+      "initial": {
+        "wallMs": 90.83069999999998,
+        "cpuMs": 63,
+        "heapDeltaMB": 1.0074081420898438,
+        "networkMB": 0.29822635650634766,
+        "battery": {
+          "estimatedMilliWattHours": 0.6422300773620605,
+          "band": "Low"
+        }
+      },
+      "reconnect": {
+        "wallMs": 1917.3411,
+        "cpuMs": 421,
+        "heapDeltaMB": -1.9168319702148438,
+        "networkMB": 0.3250093460083008,
+        "battery": {
+          "estimatedMilliWattHours": 1.1227177574157714,
+          "band": "Low"
+        }
+      },
+      "indexedDb": {
+        "workoutsReadMs": 2.8056599999999663,
+        "goalsReadMs": 0.2051600000000235,
+        "customReadMs": 2.022920000000022,
+        "bodyweightReadMs": 1.733120000000008,
+        "settingsGetMs": 0.16926000000003114
+      },
+      "supabaseLatency": {
+        "initial": [
+          {
+            "key": "select:goals",
+            "avgMs": 37.76859999999999,
+            "p95Ms": 37.76859999999999,
+            "calls": 1
+          },
+          {
+            "key": "select:settings",
+            "avgMs": 37.788099999999986,
+            "p95Ms": 37.788099999999986,
+            "calls": 1
+          },
+          {
+            "key": "select:workouts",
+            "avgMs": 38.02710000000002,
+            "p95Ms": 38.02710000000002,
+            "calls": 1
+          },
+          {
+            "key": "select:bodyweight_history",
+            "avgMs": 37.6918,
+            "p95Ms": 37.6918,
+            "calls": 1
+          },
+          {
+            "key": "select:custom_exercises",
+            "avgMs": 37.8014,
+            "p95Ms": 37.8014,
+            "calls": 1
+          },
+          {
+            "key": "select:workout_sets",
+            "avgMs": 64.1302,
+            "p95Ms": 64.1302,
+            "calls": 1
+          }
+        ],
+        "reconnect": [
+          {
+            "key": "upsert:workouts",
+            "avgMs": 32.50554000000001,
+            "p95Ms": 33.14409999999998,
+            "calls": 10
+          },
+          {
+            "key": "upsert:workout_sets",
+            "avgMs": 33.15017999999999,
+            "p95Ms": 34.290700000000015,
+            "calls": 10
+          },
+          {
+            "key": "delete:workout_sets",
+            "avgMs": 35.75420833333333,
+            "p95Ms": 48.43139999999994,
+            "calls": 12
+          },
+          {
+            "key": "upsert:workout_splits",
+            "avgMs": 34.66081000000005,
+            "p95Ms": 34.87150000000008,
+            "calls": 10
+          },
+          {
+            "key": "delete:workouts",
+            "avgMs": 34.72410000000002,
+            "p95Ms": 33.87290000000007,
+            "calls": 2
+          },
+          {
+            "key": "select:goals",
+            "avgMs": 49.185599999999795,
+            "p95Ms": 49.185599999999795,
+            "calls": 1
+          },
+          {
+            "key": "select:settings",
+            "avgMs": 49.2193000000002,
+            "p95Ms": 49.2193000000002,
+            "calls": 1
+          },
+          {
+            "key": "select:workouts",
+            "avgMs": 49.33869999999979,
+            "p95Ms": 49.33869999999979,
+            "calls": 1
+          },
+          {
+            "key": "select:bodyweight_history",
+            "avgMs": 49.16160000000036,
+            "p95Ms": 49.16160000000036,
+            "calls": 1
+          },
+          {
+            "key": "select:custom_exercises",
+            "avgMs": 49.240299999999934,
+            "p95Ms": 49.240299999999934,
+            "calls": 1
+          },
+          {
+            "key": "select:workout_sets",
+            "avgMs": 65.89920000000029,
+            "p95Ms": 65.89920000000029,
+            "calls": 1
+          }
+        ]
+      }
+    },
+    {
+      "workoutCount": 500,
+      "initial": {
+        "wallMs": 173.29980000000023,
+        "cpuMs": 31,
+        "heapDeltaMB": -3.84722900390625,
+        "networkMB": 1.3237905502319336,
+        "battery": {
+          "estimatedMilliWattHours": 2.5524020454406737,
+          "band": "Low"
+        }
+      },
+      "reconnect": {
+        "wallMs": 4202.2,
+        "cpuMs": 2594,
+        "heapDeltaMB": -2.9885025024414062,
+        "networkMB": 1.3506364822387695,
+        "battery": {
+          "estimatedMilliWattHours": 5.679009316253662,
+          "band": "Low"
+        }
+      },
+      "indexedDb": {
+        "workoutsReadMs": 14.951440000000002,
+        "goalsReadMs": 0.23872000000010302,
+        "customReadMs": 1.9619599999999082,
+        "bodyweightReadMs": 1.6578599999999823,
+        "settingsGetMs": 0.732759999999962
+      },
+      "supabaseLatency": {
+        "initial": [
+          {
+            "key": "select:goals",
+            "avgMs": 38.226300000000265,
+            "p95Ms": 38.226300000000265,
+            "calls": 1
+          },
+          {
+            "key": "select:settings",
+            "avgMs": 38.24479999999994,
+            "p95Ms": 38.24479999999994,
+            "calls": 1
+          },
+          {
+            "key": "select:bodyweight_history",
+            "avgMs": 38.20710000000008,
+            "p95Ms": 38.20710000000008,
+            "calls": 1
+          },
+          {
+            "key": "select:custom_exercises",
+            "avgMs": 38.26409999999987,
+            "p95Ms": 38.26409999999987,
+            "calls": 1
+          },
+          {
+            "key": "select:workouts",
+            "avgMs": 55.01999999999998,
+            "p95Ms": 55.01999999999998,
+            "calls": 1
+          },
+          {
+            "key": "select:workout_sets",
+            "avgMs": 138.2260000000001,
+            "p95Ms": 138.2260000000001,
+            "calls": 1
+          }
+        ],
+        "reconnect": [
+          {
+            "key": "upsert:workouts",
+            "avgMs": 33.76684999999998,
+            "p95Ms": 34.29999999999973,
+            "calls": 10
+          },
+          {
+            "key": "upsert:workout_sets",
+            "avgMs": 32.73173000000001,
+            "p95Ms": 33.08069999999998,
+            "calls": 10
+          },
+          {
+            "key": "delete:workout_sets",
+            "avgMs": 35.11195833333348,
+            "p95Ms": 34.67470000000003,
+            "calls": 12
+          },
+          {
+            "key": "upsert:workout_splits",
+            "avgMs": 32.85564000000004,
+            "p95Ms": 33.27190000000019,
+            "calls": 10
+          },
+          {
+            "key": "delete:workouts",
+            "avgMs": 33.510099999999966,
+            "p95Ms": 33.25810000000001,
+            "calls": 2
+          },
+          {
+            "key": "select:goals",
+            "avgMs": 49.875,
+            "p95Ms": 49.875,
+            "calls": 1
+          },
+          {
+            "key": "select:settings",
+            "avgMs": 49.879400000000714,
+            "p95Ms": 49.879400000000714,
+            "calls": 1
+          },
+          {
+            "key": "select:bodyweight_history",
+            "avgMs": 49.83020000000033,
+            "p95Ms": 49.83020000000033,
+            "calls": 1
+          },
+          {
+            "key": "select:custom_exercises",
+            "avgMs": 49.8755000000001,
+            "p95Ms": 49.8755000000001,
+            "calls": 1
+          },
+          {
+            "key": "select:workouts",
+            "avgMs": 50.123500000000604,
+            "p95Ms": 50.123500000000604,
+            "calls": 1
+          },
+          {
+            "key": "select:workout_sets",
+            "avgMs": 150.10710000000017,
+            "p95Ms": 150.10710000000017,
+            "calls": 1
+          }
+        ]
+      }
+    },
+    {
+      "workoutCount": 1000,
+      "initial": {
+        "wallMs": 320.8132000000005,
+        "cpuMs": 63,
+        "heapDeltaMB": -23.017410278320312,
+        "networkMB": 2.6196975708007812,
+        "battery": {
+          "estimatedMilliWattHours": 5.053025384521484,
+          "band": "Low"
+        }
+      },
+      "reconnect": {
+        "wallMs": 11918.1936,
+        "cpuMs": 10031,
+        "heapDeltaMB": -7.508598327636719,
+        "networkMB": 2.6465835571289062,
+        "battery": {
+          "estimatedMilliWattHours": 17.065708758544922,
+          "band": "Medium"
+        }
+      },
+      "indexedDb": {
+        "workoutsReadMs": 29.267719999999827,
+        "goalsReadMs": 0.2327400000001944,
+        "customReadMs": 1.925460000000021,
+        "bodyweightReadMs": 3.12155999999959,
+        "settingsGetMs": 0.5261600000005273
+      },
+      "supabaseLatency": {
+        "initial": [
+          {
+            "key": "select:goals",
+            "avgMs": 37.69850000000042,
+            "p95Ms": 37.69850000000042,
+            "calls": 1
+          },
+          {
+            "key": "select:settings",
+            "avgMs": 37.71030000000064,
+            "p95Ms": 37.71030000000064,
+            "calls": 1
+          },
+          {
+            "key": "select:custom_exercises",
+            "avgMs": 37.71550000000025,
+            "p95Ms": 37.71550000000025,
+            "calls": 1
+          },
+          {
+            "key": "select:bodyweight_history",
+            "avgMs": 53.60219999999936,
+            "p95Ms": 53.60219999999936,
+            "calls": 1
+          },
+          {
+            "key": "select:workouts",
+            "avgMs": 54.14140000000043,
+            "p95Ms": 54.14140000000043,
+            "calls": 1
+          },
+          {
+            "key": "select:workout_sets",
+            "avgMs": 253.97969999999987,
+            "p95Ms": 253.97969999999987,
+            "calls": 1
+          }
+        ],
+        "reconnect": [
+          {
+            "key": "upsert:workouts",
+            "avgMs": 32.612000000000265,
+            "p95Ms": 33.16749999999956,
+            "calls": 10
+          },
+          {
+            "key": "upsert:workout_sets",
+            "avgMs": 33.47493000000013,
+            "p95Ms": 34.242700000000696,
+            "calls": 10
+          },
+          {
+            "key": "delete:workout_sets",
+            "avgMs": 34.63332500000009,
+            "p95Ms": 34.46010000000024,
+            "calls": 12
+          },
+          {
+            "key": "upsert:workout_splits",
+            "avgMs": 33.19297999999999,
+            "p95Ms": 34.50849999999991,
+            "calls": 10
+          },
+          {
+            "key": "delete:workouts",
+            "avgMs": 33.004399999999805,
+            "p95Ms": 32.829100000000835,
+            "calls": 2
+          },
+          {
+            "key": "select:goals",
+            "avgMs": 35.59509999999864,
+            "p95Ms": 35.59509999999864,
+            "calls": 1
+          },
+          {
+            "key": "select:settings",
+            "avgMs": 35.59720000000016,
+            "p95Ms": 35.59720000000016,
+            "calls": 1
+          },
+          {
+            "key": "select:custom_exercises",
+            "avgMs": 37.70470000000023,
+            "p95Ms": 37.70470000000023,
+            "calls": 1
+          },
+          {
+            "key": "select:bodyweight_history",
+            "avgMs": 65.77409999999873,
+            "p95Ms": 65.77409999999873,
+            "calls": 1
+          },
+          {
+            "key": "select:workouts",
+            "avgMs": 66.5002999999997,
+            "p95Ms": 66.5002999999997,
+            "calls": 1
+          },
+          {
+            "key": "select:workout_sets",
+            "avgMs": 248.97630000000026,
+            "p95Ms": 248.97630000000026,
+            "calls": 1
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -331,7 +331,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const ownerId = get().ownerId;
       const payload = { ...workout, ownerId, updatedAt: new Date().toISOString() };
       await db.workouts.put(payload);
-      await enqueueSync(ownerId, 'CREATE_WORKOUT', workout);
+      await enqueueSync(ownerId, 'CREATE_WORKOUT', payload);
 
       const workouts = [...get().workouts, payload].sort((a, b) => (a.date > b.date ? 1 : -1));
       set({ workouts, analytics: recalculate(workouts), error: undefined });
@@ -350,7 +350,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const ownerId = get().ownerId;
       const payload = { ...workout, ownerId, updatedAt: new Date().toISOString() };
       await db.workouts.put(payload);
-      await enqueueSync(ownerId, 'UPDATE_WORKOUT', workout);
+      await enqueueSync(ownerId, 'UPDATE_WORKOUT', payload);
 
       const workouts = get().workouts.map((item) => (item.id === workout.id ? payload : item));
       set({ workouts, analytics: recalculate(workouts), error: undefined });

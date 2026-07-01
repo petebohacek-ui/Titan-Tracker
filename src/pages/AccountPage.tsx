@@ -3,6 +3,7 @@ import { SectionCard } from '../components/SectionCard';
 import { useAuthStore } from '../hooks/useAuthStore';
 import { useAppStore } from '../hooks/useAppStore';
 import { getPendingCloudOperations, uploadAllLocalDataToCloud } from '../services/cloudSyncService';
+import { getSupabaseClient } from '../lib/supabase';
 
 export const AccountPage = () => {
   const { user, loading, error, signIn, signUp, signOut, requestPasswordReset, updatePassword, clearError } = useAuthStore();
@@ -19,6 +20,7 @@ export const AccountPage = () => {
   const [resetPassword, setResetPassword] = useState('');
   const [status, setStatus] = useState('');
   const [pendingOps, setPendingOps] = useState(0);
+  const authAvailable = Boolean(getSupabaseClient());
 
   useEffect(() => {
     const loadPending = async () => {
@@ -35,26 +37,66 @@ export const AccountPage = () => {
 
   const handleSignIn = async () => {
     clearError();
+    setStatus('');
+    if (!authAvailable) {
+      setStatus('Authentication is unavailable. Configure Supabase keys and reload the app.');
+      return;
+    }
+    if (!email.trim() || !password) {
+      setStatus('Enter your email and password to sign in.');
+      return;
+    }
     await signIn(email.trim(), password);
-    setStatus('Sign in attempt complete.');
+    const authError = useAuthStore.getState().error;
+    setStatus(authError ? 'Sign in failed. Check your credentials and try again.' : 'Sign in successful.');
   };
 
   const handleSignUp = async () => {
     clearError();
+    setStatus('');
+    if (!authAvailable) {
+      setStatus('Authentication is unavailable. Configure Supabase keys and reload the app.');
+      return;
+    }
+    if (!email.trim() || !password) {
+      setStatus('Enter your email and password to create an account.');
+      return;
+    }
     await signUp(email.trim(), password);
-    setStatus('Sign up submitted. Check your email for verification if enabled.');
+    const authError = useAuthStore.getState().error;
+    setStatus(authError ? 'Sign up failed. Review the error and try again.' : 'Sign up submitted. Check your email for verification if enabled.');
   };
 
   const handleForgotPassword = async () => {
     clearError();
+    setStatus('');
+    if (!authAvailable) {
+      setStatus('Authentication is unavailable. Configure Supabase keys and reload the app.');
+      return;
+    }
+    if (!email.trim()) {
+      setStatus('Enter your account email to request a reset link.');
+      return;
+    }
     await requestPasswordReset(email.trim());
-    setStatus('Password reset email sent if account exists.');
+    const authError = useAuthStore.getState().error;
+    setStatus(authError ? 'Password reset request failed. Please try again.' : 'Password reset email sent if account exists.');
   };
 
   const handleResetPassword = async () => {
     clearError();
+    setStatus('');
+    if (!authAvailable) {
+      setStatus('Authentication is unavailable. Configure Supabase keys and reload the app.');
+      return;
+    }
+    if (!resetPassword) {
+      setStatus('Enter a new password before resetting.');
+      return;
+    }
     await updatePassword(resetPassword);
-    setStatus('Password update attempted.');
+    const authError = useAuthStore.getState().error;
+    setStatus(authError ? 'Password reset failed. Review the error and try again.' : 'Password updated successfully.');
   };
 
   const handleUploadLocalData = async () => {
@@ -89,17 +131,18 @@ export const AccountPage = () => {
               <input className="field" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
             </label>
             <div className="md:col-span-2 flex flex-wrap gap-2">
-              <button type="button" className="btn-primary" onClick={() => void handleSignIn()} disabled={loading}>Sign In</button>
-              <button type="button" className="btn-subtle" onClick={() => void handleSignUp()} disabled={loading}>Sign Up</button>
-              <button type="button" className="btn-subtle" onClick={() => void handleForgotPassword()} disabled={loading}>Forgot Password</button>
+              <button type="button" className="btn-primary" onClick={() => void handleSignIn()} disabled={loading || !authAvailable}>Sign In</button>
+              <button type="button" className="btn-subtle" onClick={() => void handleSignUp()} disabled={loading || !authAvailable}>Sign Up</button>
+              <button type="button" className="btn-subtle" onClick={() => void handleForgotPassword()} disabled={loading || !authAvailable}>Forgot Password</button>
             </div>
             <label className="space-y-1 text-sm md:col-span-2">
               <span className="muted">New Password (after reset link)</span>
               <div className="flex gap-2">
                 <input className="field" type="password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
-                <button type="button" className="btn-subtle" onClick={() => void handleResetPassword()} disabled={loading}>Reset</button>
+                <button type="button" className="btn-subtle" onClick={() => void handleResetPassword()} disabled={loading || !authAvailable}>Reset</button>
               </div>
             </label>
+            {!authAvailable && <p className="muted text-sm md:col-span-2">Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable account creation.</p>}
           </div>
         ) : (
           <div className="space-y-2">

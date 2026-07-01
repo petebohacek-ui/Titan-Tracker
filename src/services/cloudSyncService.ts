@@ -71,9 +71,7 @@ type BodyweightRow = {
   updated_at: string;
 };
 
-const CLOUD_SYNC_KEY_PREFIX = 'titan-track-cloud-sync-';
-
-const getCloudSyncKey = (userId: string) => `${CLOUD_SYNC_KEY_PREFIX}${userId}`;
+const quoteFilterValue = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
 
 const mapWorkoutToCloud = (userId: string, workout: WorkoutSession) => ({
   id: workout.id,
@@ -153,7 +151,7 @@ const upsertWorkoutSets = async (userId: string, workout: WorkoutSession) => {
     }
 
     const keepIds = rows.map((row) => row.id);
-    const inClause = `(${keepIds.join(',')})`;
+    const inClause = `(${keepIds.map(quoteFilterValue).join(',')})`;
     const { error: pruneError } = await supabase
       .from('workout_sets')
       .delete()
@@ -470,8 +468,6 @@ export const pullCloudChanges = async (userId: string): Promise<void> => {
       );
     }
   });
-
-  localStorage.setItem(getCloudSyncKey(userId), new Date().toISOString());
 };
 
 export const pushQueuedCloudChanges = async (userId: string): Promise<number> => {

@@ -78,6 +78,12 @@ export interface SyncLockRecord {
   expiresAt: string;
 }
 
+export interface AuthStorageRecord {
+  key: string;
+  value: string;
+  updatedAt: string;
+}
+
 class TitanTrackDatabase extends Dexie {
   workouts!: Table<OwnedWorkoutSession, [string, string]>;
   // Legacy table retained for migration safety.
@@ -90,6 +96,7 @@ class TitanTrackDatabase extends Dexie {
   bodyweightEntries!: Table<OwnedBodyweightEntry, [string, string]>;
   backupSnapshots!: Table<BackupSnapshotRecord, [string, string]>;
   syncLocks!: Table<SyncLockRecord, string>;
+  authStorage!: Table<AuthStorageRecord, string>;
 
   constructor() {
     super('TitanTrackDB');
@@ -171,6 +178,20 @@ class TitanTrackDatabase extends Dexie {
       bodyweightEntries: '[ownerId+id],id,ownerId,date,updatedAt',
       backupSnapshots: '[ownerId+id],id,ownerId,createdAt,trigger',
       syncLocks: '&ownerId,expiresAt'
+    });
+
+    this.version(6).stores({
+      workouts: '[ownerId+id],id,ownerId,date,split,updatedAt',
+      settings: '&theme',
+      appSettings: '[ownerId+id],ownerId,updatedAt',
+      goals: '[ownerId+id],id,ownerId,type',
+      customExercises: '[ownerId+id],id,ownerId,name,bodyPart,category,updatedAt',
+      syncQueue: '[ownerId+id],id,ownerId,type,createdAt',
+      activeWorkoutSnapshots: '[ownerId+id],ownerId,updatedAt',
+      bodyweightEntries: '[ownerId+id],id,ownerId,date,updatedAt',
+      backupSnapshots: '[ownerId+id],id,ownerId,createdAt,trigger',
+      syncLocks: '&ownerId,expiresAt',
+      authStorage: '&key,updatedAt'
     });
   }
 }

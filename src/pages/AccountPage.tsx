@@ -12,6 +12,7 @@ export const AccountPage = () => {
   const isOnline = useAppStore((state) => state.isOnline);
   const settings = useAppStore((state) => state.settings);
   const workouts = useAppStore((state) => state.workouts);
+  const ownerId = useAppStore((state) => state.ownerId);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -21,7 +22,7 @@ export const AccountPage = () => {
 
   useEffect(() => {
     const loadPending = async () => {
-      setPendingOps(await getPendingCloudOperations());
+      setPendingOps(await getPendingCloudOperations(ownerId));
     };
 
     void loadPending();
@@ -30,7 +31,7 @@ export const AccountPage = () => {
     }, 3000);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [ownerId]);
 
   const handleSignIn = async () => {
     clearError();

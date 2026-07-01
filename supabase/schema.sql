@@ -137,6 +137,34 @@ alter table public.bodyweight_history enable row level security;
 alter table public.analytics_cache enable row level security;
 alter table public.backup_snapshots enable row level security;
 
+alter table public.workouts force row level security;
+alter table public.workout_sets force row level security;
+alter table public.exercises force row level security;
+alter table public.custom_exercises force row level security;
+alter table public.workout_splits force row level security;
+alter table public.personal_records force row level security;
+alter table public.goals force row level security;
+alter table public.settings force row level security;
+alter table public.bodyweight_history force row level security;
+alter table public.analytics_cache force row level security;
+alter table public.backup_snapshots force row level security;
+
+revoke all on schema public from anon;
+revoke all on all tables in schema public from anon;
+
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on table public.workouts to authenticated;
+grant select, insert, update, delete on table public.workout_sets to authenticated;
+grant select, insert, update, delete on table public.exercises to authenticated;
+grant select, insert, update, delete on table public.custom_exercises to authenticated;
+grant select, insert, update, delete on table public.workout_splits to authenticated;
+grant select, insert, update, delete on table public.personal_records to authenticated;
+grant select, insert, update, delete on table public.goals to authenticated;
+grant select, insert, update, delete on table public.settings to authenticated;
+grant select, insert, update, delete on table public.bodyweight_history to authenticated;
+grant select, insert, update, delete on table public.analytics_cache to authenticated;
+grant select, insert, update, delete on table public.backup_snapshots to authenticated;
+
 -- Helper policy pattern: each user can only access their own rows.
 create policy "workouts_owner_select" on public.workouts for select using (auth.uid() = user_id);
 create policy "workouts_owner_insert" on public.workouts for insert with check (auth.uid() = user_id);
@@ -199,3 +227,83 @@ create index if not exists idx_workout_sets_workout on public.workout_sets(worko
 create index if not exists idx_goals_user_updated on public.goals(user_id, updated_at desc);
 create index if not exists idx_custom_exercises_user_updated on public.custom_exercises(user_id, updated_at desc);
 create index if not exists idx_bodyweight_user_updated on public.bodyweight_history(user_id, updated_at desc);
+
+-- Strengthen sync integrity: each workout set must belong to the same user as its parent workout.
+create or replace function public.enforce_workout_set_owner()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  workout_owner uuid;
+begin
+  select user_id into workout_owner from public.workouts where id = new.workout_id;
+  if workout_owner is null then
+    raise exception 'Workout % does not exist for set %', new.workout_id, new.id;
+  end if;
+  if workout_owner <> new.user_id then
+    raise exception 'workout_sets.user_id must match workouts.user_id';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_workout_set_owner on public.workout_sets;
+create trigger trg_workout_set_owner
+before insert or update on public.workout_sets
+for each row
+execute function public.enforce_workout_set_owner();
+
+-- Keep updated_at fresh in the database even when clients miss it.
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_workouts_updated_at on public.workouts;
+create trigger trg_workouts_updated_at
+before update on public.workouts
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_workout_sets_updated_at on public.workout_sets;
+create trigger trg_workout_sets_updated_at
+before update on public.workout_sets
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_custom_exercises_updated_at on public.custom_exercises;
+create trigger trg_custom_exercises_updated_at
+before update on public.custom_exercises
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_goals_updated_at on public.goals;
+create trigger trg_goals_updated_at
+before update on public.goals
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_settings_updated_at on public.settings;
+create trigger trg_settings_updated_at
+before update on public.settings
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_bodyweight_updated_at on public.bodyweight_history;
+create trigger trg_bodyweight_updated_at
+before update on public.bodyweight_history
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists trg_backup_updated_at on public.backup_snapshots;
+create trigger trg_backup_updated_at
+before update on public.backup_snapshots
+for each row
+execute function public.set_updated_at();

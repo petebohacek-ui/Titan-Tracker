@@ -21,21 +21,72 @@ const syncOperationToCloud = async (operation: SyncOperation): Promise<void> => 
   }
 };
 
-export const enqueueSync = async (type: SyncOperationType, payload: unknown) => {
+const getEntityId = (type: SyncOperationType, payload: unknown): string | null => {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  switch (type) {
+    case 'CREATE_WORKOUT':
+    case 'UPDATE_WORKOUT':
+    case 'DELETE_WORKOUT':
+    case 'UPSERT_GOAL':
+    case 'DELETE_GOAL':
+    case 'UPSERT_CUSTOM_EXERCISE':
+    case 'DELETE_CUSTOM_EXERCISE':
+    case 'UPSERT_BODYWEIGHT':
+    case 'DELETE_BODYWEIGHT':
+    case 'BACKUP_SNAPSHOT':
+      return String((payload as { id?: string }).id ?? '');
+    case 'UPDATE_SETTINGS':
+      return 'app-settings';
+    default:
+      return null;
+  }
+};
+
+export const enqueueSync = async (ownerId: string, type: SyncOperationType, payload: unknown) => {
+  const entityId = getEntityId(type, payload);
+  if (entityId) {
+    const pending = await db.syncQueue.where('ownerId').equals(ownerId).toArray();
+    const malformed: string[] = [];
+    const redundant = pending
+      .filter((op) => {
+        try {
+          const currentPayload = JSON.parse(op.payload);
+          const currentEntityId = getEntityId(op.type, currentPayload);
+          return currentEntityId === entityId;
+        } catch {
+          malformed.push(op.id);
+          return false;
+        }
+      })
+      .map((op) => op.id);
+
+    if (malformed.length > 0) {
+      await db.syncQueue.bulkDelete(malformed.map((id) => [ownerId, id]));
+    }
+
+    if (redundant.length > 0) {
+      await db.syncQueue.bulkDelete(redundant.map((id) => [ownerId, id]));
+    }
+  }
+
   await db.syncQueue.put({
     id: crypto.randomUUID(),
+    ownerId,
     type,
     payload: JSON.stringify(payload),
     createdAt: new Date().toISOString()
   });
 };
 
-export const flushSyncQueue = async (): Promise<number> => {
+export const flushSyncQueue = async (ownerId: string): Promise<number> => {
   if (!navigator.onLine) {
     return 0;
   }
 
-  const operations = (await db.syncQueue.toArray()).sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
+  const operations = (await db.syncQueue.where('ownerId').equals(ownerId).toArray()).sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
   if (operations.length === 0) {
     return 0;
   }
@@ -44,7 +95,7 @@ export const flushSyncQueue = async (): Promise<number> => {
   for (const operation of operations) {
     try {
       await syncOperationToCloud(operation);
-      await db.syncQueue.delete(operation.id);
+      await db.syncQueue.delete([ownerId, operation.id]);
       synced += 1;
     } catch (error) {
       console.error('Failed to sync operation', operation.type, error);

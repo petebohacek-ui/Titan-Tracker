@@ -2,6 +2,46 @@ import { create } from 'zustand';
 import type { Session, User } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../lib/supabase';
 
+const SENSITIVE_AUTH_KEYS = new Set([
+  'access_token',
+  'refresh_token',
+  'expires_in',
+  'expires_at',
+  'token_type',
+  'type',
+  'provider_token',
+  'provider_refresh_token'
+]);
+
+const scrubSensitiveAuthParams = () => {
+  const url = new URL(window.location.href);
+  let changed = false;
+
+  if (url.hash.startsWith('#')) {
+    const hashParams = new URLSearchParams(url.hash.slice(1));
+    for (const key of Array.from(hashParams.keys())) {
+      if (SENSITIVE_AUTH_KEYS.has(key)) {
+        hashParams.delete(key);
+        changed = true;
+      }
+    }
+    url.hash = hashParams.toString() ? `#${hashParams.toString()}` : '';
+  }
+
+  for (const key of Array.from(url.searchParams.keys())) {
+    if (SENSITIVE_AUTH_KEYS.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+  }
+};
+
+const normalizeEmail = (email: string) => email.trim().toLowerCase();
+
 interface AuthStore {
   initialized: boolean;
   loading: boolean;
@@ -26,6 +66,8 @@ export const useAuthStore = create<AuthStore>((set) => ({
   session: null,
 
   initializeAuth: async () => {
+    scrubSensitiveAuthParams();
+
     const supabase = getSupabaseClient();
     if (!supabase) {
       set({ initialized: true });
@@ -55,8 +97,13 @@ export const useAuthStore = create<AuthStore>((set) => ({
       return;
     }
 
+    if (password.length < 10) {
+      set({ error: 'Password must be at least 10 characters.' });
+      return;
+    }
+
     set({ loading: true, error: undefined });
-    const { error } = await supabase.auth.signUp({ email, password });
+    const { error } = await supabase.auth.signUp({ email: normalizeEmail(email), password });
     set({ loading: false, error: error?.message });
   },
 
@@ -68,7 +115,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
 
     set({ loading: true, error: undefined });
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({ email: normalizeEmail(email), password });
     set({ loading: false, error: error?.message });
   },
 
@@ -81,7 +128,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
     set({ loading: true, error: undefined });
     const redirectTo = `${window.location.origin}/account`;
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmail(email), { redirectTo });
     set({ loading: false, error: error?.message });
   },
 
@@ -89,6 +136,11 @@ export const useAuthStore = create<AuthStore>((set) => ({
     const supabase = getSupabaseClient();
     if (!supabase) {
       set({ error: 'Supabase is not configured.' });
+      return;
+    }
+
+    if (password.length < 10) {
+      set({ error: 'Password must be at least 10 characters.' });
       return;
     }
 

@@ -1,4 +1,3 @@
-import { parseISO } from 'date-fns';
 import { db } from '../database/db';
 import { getSupabaseClient } from '../lib/supabase';
 import type { AppSettings, ExerciseDefinition, Goal, WorkoutSession } from '../types/workout';
@@ -122,18 +121,17 @@ const mapBodyweightToCloud = (userId: string, entry: BodyweightEntry) => ({
   updated_at: entry.updatedAt
 });
 
-const upsertWorkoutSets = async (workout: WorkoutSession) => {
+const upsertWorkoutSets = async (userId: string, workout: WorkoutSession) => {
   const supabase = getSupabaseClient();
   if (!supabase) {
     return;
   }
 
-  await supabase.from('workout_sets').delete().eq('workout_id', workout.id);
-
   const rows = workout.exercises.flatMap((exercise) =>
     exercise.sets.map((set, setIndex) => ({
       id: set.id,
       workout_id: workout.id,
+      user_id: userId,
       exercise_id: exercise.id,
       exercise_name: exercise.name,
       body_part: exercise.bodyPart,
@@ -149,7 +147,31 @@ const upsertWorkoutSets = async (workout: WorkoutSession) => {
   );
 
   if (rows.length > 0) {
-    await (supabase.from('workout_sets' as any) as any).upsert(rows as any, { onConflict: 'id' });
+    const { error } = await (supabase.from('workout_sets' as any) as any).upsert(rows as any, { onConflict: 'id' });
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const keepIds = rows.map((row) => row.id);
+    const inClause = `(${keepIds.join(',')})`;
+    const { error: pruneError } = await supabase
+      .from('workout_sets')
+      .delete()
+      .eq('workout_id', workout.id)
+      .eq('user_id', userId)
+      .not('id', 'in', inClause);
+    if (pruneError) {
+      throw new Error(pruneError.message);
+    }
+  } else {
+    const { error: deleteError } = await supabase
+      .from('workout_sets')
+      .delete()
+      .eq('workout_id', workout.id)
+      .eq('user_id', userId);
+    if (deleteError) {
+      throw new Error(deleteError.message);
+    }
   }
 };
 
@@ -159,61 +181,104 @@ const syncOperation = async (userId: string, operation: SyncOperation) => {
     return;
   }
 
-  const payload = JSON.parse(operation.payload);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(operation.payload);
+  } catch {
+    throw new Error('Malformed sync payload');
+  }
 
   switch (operation.type) {
     case 'CREATE_WORKOUT':
     case 'UPDATE_WORKOUT': {
       const workout = payload as WorkoutSession;
-      await (supabase.from('workouts' as any) as any).upsert(mapWorkoutToCloud(userId, workout) as any, { onConflict: 'id' });
-      await upsertWorkoutSets(workout);
-      await supabase
+      const { error: workoutError } = await (supabase.from('workouts' as any) as any).upsert(mapWorkoutToCloud(userId, workout) as any, { onConflict: 'id' });
+      if (workoutError) {
+        throw new Error(workoutError.message);
+      }
+      await upsertWorkoutSets(userId, workout);
+      const { error: splitError } = await supabase
         .from('workout_splits' as any)
         .upsert({ user_id: userId, split: workout.split, updated_at: workout.updatedAt } as any, { onConflict: 'user_id,split' });
+      if (splitError) {
+        throw new Error(splitError.message);
+      }
       break;
     }
     case 'DELETE_WORKOUT': {
-      await supabase.from('workout_sets').delete().eq('workout_id', payload.id);
-      await supabase.from('workouts').delete().eq('id', payload.id).eq('user_id', userId);
+      const deletePayload = payload as { id: string };
+      const { error: setsError } = await supabase.from('workout_sets').delete().eq('workout_id', deletePayload.id).eq('user_id', userId);
+      if (setsError) {
+        throw new Error(setsError.message);
+      }
+      const { error: workoutsError } = await supabase.from('workouts').delete().eq('id', deletePayload.id).eq('user_id', userId);
+      if (workoutsError) {
+        throw new Error(workoutsError.message);
+      }
       break;
     }
     case 'UPDATE_SETTINGS': {
       const settings = payload as AppSettings;
-      await supabase
+      const { error } = await supabase
         .from('settings' as any)
         .upsert({ user_id: userId, payload: settings, updated_at: new Date().toISOString() } as any, { onConflict: 'user_id' });
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'UPSERT_GOAL': {
-      await (supabase.from('goals' as any) as any).upsert(mapGoalToCloud(userId, payload as Goal) as any, { onConflict: 'id' });
+      const { error } = await (supabase.from('goals' as any) as any).upsert(mapGoalToCloud(userId, payload as Goal) as any, { onConflict: 'id' });
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'DELETE_GOAL': {
-      await supabase.from('goals').delete().eq('id', payload.id).eq('user_id', userId);
+      const deletePayload = payload as { id: string };
+      const { error } = await supabase.from('goals').delete().eq('id', deletePayload.id).eq('user_id', userId);
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'UPSERT_CUSTOM_EXERCISE': {
-      await supabase
+      const { error } = await supabase
         .from('custom_exercises' as any)
         .upsert(mapCustomExerciseToCloud(userId, payload as ExerciseDefinition) as any, { onConflict: 'id' });
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'DELETE_CUSTOM_EXERCISE': {
-      await supabase.from('custom_exercises').delete().eq('id', payload.id).eq('user_id', userId);
+      const deletePayload = payload as { id: string };
+      const { error } = await supabase.from('custom_exercises').delete().eq('id', deletePayload.id).eq('user_id', userId);
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'UPSERT_BODYWEIGHT': {
-      await (supabase.from('bodyweight_history' as any) as any).upsert(mapBodyweightToCloud(userId, payload as BodyweightEntry) as any, { onConflict: 'id' });
+      const { error } = await (supabase.from('bodyweight_history' as any) as any).upsert(mapBodyweightToCloud(userId, payload as BodyweightEntry) as any, { onConflict: 'id' });
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'DELETE_BODYWEIGHT': {
-      await supabase.from('bodyweight_history').delete().eq('id', payload.id).eq('user_id', userId);
+      const deletePayload = payload as { id: string };
+      const { error } = await supabase.from('bodyweight_history').delete().eq('id', deletePayload.id).eq('user_id', userId);
+      if (error) {
+        throw new Error(error.message);
+      }
       break;
     }
     case 'BACKUP_SNAPSHOT': {
-      const snapshot = await db.backupSnapshots.get(payload.id);
+      const backupPayload = payload as { id: string };
+      const snapshot = await db.backupSnapshots.get([userId, backupPayload.id]);
       if (snapshot) {
-        await (supabase.from('backup_snapshots' as any) as any).upsert({
+        const { error } = await (supabase.from('backup_snapshots' as any) as any).upsert({
           id: snapshot.id,
           user_id: userId,
           trigger: snapshot.trigger,
@@ -221,6 +286,9 @@ const syncOperation = async (userId: string, operation: SyncOperation) => {
           created_at: snapshot.createdAt,
           updated_at: snapshot.createdAt
         } as any);
+        if (error) {
+          throw new Error(error.message);
+        }
       }
       break;
     }
@@ -229,44 +297,42 @@ const syncOperation = async (userId: string, operation: SyncOperation) => {
   }
 };
 
-const replaceWorkoutSets = async (workoutId: string, sets: Array<Record<string, unknown>>) => {
-  await db.transaction('rw', [db.workouts], async () => {
-    const workout = await db.workouts.get(workoutId);
-    if (!workout) {
-      return;
-    }
+const mapSetsByWorkout = (rows: WorkoutSetRow[]): Map<string, WorkoutSession['exercises']> => {
+  const byWorkout = new Map<string, Array<WorkoutSetRow>>();
+  for (const row of rows) {
+    const workoutRows = byWorkout.get(row.workout_id) ?? [];
+    workoutRows.push(row);
+    byWorkout.set(row.workout_id, workoutRows);
+  }
 
-    const exerciseMap = new Map<string, typeof workout.exercises[number]>();
-    for (const entry of sets) {
-      const exerciseId = String(entry.exercise_id);
-      const existing = exerciseMap.get(exerciseId);
+  const result = new Map<string, WorkoutSession['exercises']>();
+  for (const [workoutId, workoutRows] of byWorkout.entries()) {
+    const byExercise = new Map<string, WorkoutSession['exercises'][number]>();
+    for (const row of workoutRows.sort((a, b) => a.set_index - b.set_index || a.id.localeCompare(b.id))) {
+      const existing = byExercise.get(row.exercise_id);
       if (!existing) {
-        exerciseMap.set(exerciseId, {
-          id: exerciseId,
-          name: String(entry.exercise_name),
-          bodyPart: entry.body_part as WorkoutSession['exercises'][number]['bodyPart'],
-          category: entry.category as WorkoutSession['exercises'][number]['category'],
-          notes: (entry.notes as string | null) ?? undefined,
+        byExercise.set(row.exercise_id, {
+          id: row.exercise_id,
+          name: row.exercise_name,
+          bodyPart: row.body_part,
+          category: row.category,
+          notes: row.notes ?? undefined,
           sets: []
         });
       }
 
-      exerciseMap.get(exerciseId)?.sets.push({
-        id: String(entry.id),
-        reps: Number(entry.reps),
-        weight: Number(entry.weight),
-        rpe: Number(entry.rpe),
-        restSeconds: Number(entry.rest_seconds)
+      byExercise.get(row.exercise_id)?.sets.push({
+        id: row.id,
+        reps: row.reps,
+        weight: row.weight,
+        rpe: row.rpe,
+        restSeconds: row.rest_seconds
       });
     }
+    result.set(workoutId, Array.from(byExercise.values()));
+  }
 
-    const mergedExercises = Array.from(exerciseMap.values()).map((exercise) => ({
-      ...exercise,
-      sets: exercise.sets.sort((a, b) => a.id.localeCompare(b.id))
-    }));
-
-    await db.workouts.put({ ...workout, exercises: mergedExercises });
-  });
+  return result;
 };
 
 export const pullCloudChanges = async (userId: string): Promise<void> => {
@@ -275,31 +341,13 @@ export const pullCloudChanges = async (userId: string): Promise<void> => {
     return;
   }
 
-  const since = localStorage.getItem(getCloudSyncKey(userId));
-
-  let workoutsQuery = supabase.from('workouts').select('*').eq('user_id', userId);
-  let goalsQuery = supabase.from('goals').select('*').eq('user_id', userId);
-  let settingsQuery = supabase.from('settings').select('*').eq('user_id', userId).limit(1);
-  let customExercisesQuery = supabase.from('custom_exercises').select('*').eq('user_id', userId);
-  let bodyweightQuery = supabase.from('bodyweight_history').select('*').eq('user_id', userId);
-  let setsQuery = supabase.from('workout_sets').select('*');
-
-  if (since) {
-    workoutsQuery = workoutsQuery.gt('updated_at', since);
-    goalsQuery = goalsQuery.gt('updated_at', since);
-    settingsQuery = settingsQuery.gt('updated_at', since);
-    customExercisesQuery = customExercisesQuery.gt('updated_at', since);
-    bodyweightQuery = bodyweightQuery.gt('updated_at', since);
-    setsQuery = setsQuery.gt('updated_at', since);
-  }
-
   const [workoutsRes, goalsRes, settingsRes, customRes, bodyweightRes, setsRes] = await Promise.all([
-    workoutsQuery,
-    goalsQuery,
-    settingsQuery,
-    customExercisesQuery,
-    bodyweightQuery,
-    setsQuery
+    supabase.from('workouts').select('*').eq('user_id', userId),
+    supabase.from('goals').select('*').eq('user_id', userId),
+    supabase.from('settings').select('*').eq('user_id', userId).limit(1),
+    supabase.from('custom_exercises').select('*').eq('user_id', userId),
+    supabase.from('bodyweight_history').select('*').eq('user_id', userId),
+    supabase.from('workout_sets').select('*').eq('user_id', userId)
   ]);
 
   if (workoutsRes.error || goalsRes.error || settingsRes.error || customRes.error || bodyweightRes.error || setsRes.error) {
@@ -321,111 +369,220 @@ export const pullCloudChanges = async (userId: string): Promise<void> => {
   const remoteBodyweight = (bodyweightRes.data ?? []) as BodyweightRow[];
   const remoteSets = (setsRes.data ?? []) as WorkoutSetRow[];
 
-  for (const row of remoteWorkouts) {
-    const local = await db.workouts.get(row.id);
-    const remoteDate = parseISO(row.updated_at).getTime();
-    const localDate = local ? parseISO(local.updatedAt).getTime() : 0;
-    if (!local || remoteDate >= localDate) {
-      await db.workouts.put({
-        id: row.id,
-        date: row.date,
-        split: row.split,
-        durationMinutes: row.duration_minutes,
-        totalVolume: row.total_volume,
-        completed: row.completed,
-        notes: row.notes ?? undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        exercises: local?.exercises ?? []
-      });
+  const setsByWorkout = mapSetsByWorkout(remoteSets);
+
+  await db.transaction('rw', [db.workouts, db.goals, db.appSettings, db.customExercises, db.bodyweightEntries], async () => {
+    const localWorkouts = await db.workouts.where('ownerId').equals(userId).toArray();
+    const remoteWorkoutIds = new Set(remoteWorkouts.map((row) => row.id));
+    const removeWorkoutKeys = localWorkouts
+      .filter((workout) => !remoteWorkoutIds.has(workout.id))
+      .map((workout) => [userId, workout.id] as [string, string]);
+    if (removeWorkoutKeys.length > 0) {
+      await db.workouts.bulkDelete(removeWorkoutKeys);
     }
-  }
-
-  const setsByWorkout = new Map<string, Array<Record<string, unknown>>>();
-  for (const row of remoteSets) {
-    const workoutId = String(row.workout_id);
-    if (!setsByWorkout.has(workoutId)) {
-      setsByWorkout.set(workoutId, []);
+    if (remoteWorkouts.length > 0) {
+      await db.workouts.bulkPut(
+        remoteWorkouts.map((row) => ({
+          ownerId: userId,
+          id: row.id,
+          date: row.date,
+          split: row.split,
+          durationMinutes: row.duration_minutes,
+          totalVolume: row.total_volume,
+          completed: row.completed,
+          notes: row.notes ?? undefined,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          exercises: setsByWorkout.get(row.id) ?? []
+        }))
+      );
     }
-    setsByWorkout.get(workoutId)?.push(row as Record<string, unknown>);
-  }
 
-  for (const [workoutId, sets] of setsByWorkout.entries()) {
-    await replaceWorkoutSets(workoutId, sets);
-  }
+    const localGoals = await db.goals.where('ownerId').equals(userId).toArray();
+    const remoteGoalIds = new Set(remoteGoals.map((row) => row.id));
+    const removeGoalKeys = localGoals
+      .filter((goal) => !remoteGoalIds.has(goal.id))
+      .map((goal) => [userId, goal.id] as [string, string]);
+    if (removeGoalKeys.length > 0) {
+      await db.goals.bulkDelete(removeGoalKeys);
+    }
+    if (remoteGoals.length > 0) {
+      await db.goals.bulkPut(
+        remoteGoals.map((row) => ({
+          ownerId: userId,
+          id: row.id,
+          label: row.label,
+          type: row.type,
+          target: row.target,
+          progress: row.progress,
+          unit: row.unit
+        }))
+      );
+    }
 
-  for (const row of remoteGoals) {
-    await db.goals.put({
-      id: row.id,
-      label: row.label,
-      type: row.type,
-      target: row.target,
-      progress: row.progress,
-      unit: row.unit
-    });
-  }
+    if (remoteSettings?.payload) {
+      await db.appSettings.put({ ownerId: userId, id: 'app', value: remoteSettings.payload as AppSettings, updatedAt: remoteSettings.updated_at });
+    }
 
-  if (remoteSettings?.payload) {
-    await db.appSettings.put({ id: 'app', value: remoteSettings.payload as AppSettings, updatedAt: remoteSettings.updated_at });
-  }
+    const localCustom = await db.customExercises.where('ownerId').equals(userId).toArray();
+    const remoteCustomIds = new Set(remoteCustom.map((row) => row.id));
+    const removeCustomKeys = localCustom
+      .filter((exercise) => !remoteCustomIds.has(exercise.id))
+      .map((exercise) => [userId, exercise.id] as [string, string]);
+    if (removeCustomKeys.length > 0) {
+      await db.customExercises.bulkDelete(removeCustomKeys);
+    }
+    if (remoteCustom.length > 0) {
+      await db.customExercises.bulkPut(
+        remoteCustom.map((row) => ({
+          ownerId: userId,
+          id: row.id,
+          name: row.name,
+          bodyPart: row.body_part,
+          category: row.category,
+          primarySplits: row.primary_splits,
+          isCustom: true,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        }))
+      );
+    }
 
-  for (const row of remoteCustom) {
-    await db.customExercises.put({
-      id: row.id,
-      name: row.name,
-      bodyPart: row.body_part,
-      category: row.category,
-      primarySplits: row.primary_splits,
-      isCustom: true,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    });
-  }
-
-  for (const row of remoteBodyweight) {
-    await db.bodyweightEntries.put({
-      id: row.id,
-      date: row.date,
-      weight: row.weight,
-      note: row.note ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    });
-  }
+    const localBodyweight = await db.bodyweightEntries.where('ownerId').equals(userId).toArray();
+    const remoteBodyweightIds = new Set(remoteBodyweight.map((row) => row.id));
+    const removeBodyweightKeys = localBodyweight
+      .filter((entry) => !remoteBodyweightIds.has(entry.id))
+      .map((entry) => [userId, entry.id] as [string, string]);
+    if (removeBodyweightKeys.length > 0) {
+      await db.bodyweightEntries.bulkDelete(removeBodyweightKeys);
+    }
+    if (remoteBodyweight.length > 0) {
+      await db.bodyweightEntries.bulkPut(
+        remoteBodyweight.map((row) => ({
+          ownerId: userId,
+          id: row.id,
+          date: row.date,
+          weight: row.weight,
+          note: row.note ?? undefined,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        }))
+      );
+    }
+  });
 
   localStorage.setItem(getCloudSyncKey(userId), new Date().toISOString());
 };
 
 export const pushQueuedCloudChanges = async (userId: string): Promise<number> => {
-  const operations = (await db.syncQueue.toArray()).sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
+  const operations = (await db.syncQueue.where('ownerId').equals(userId).toArray()).sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
   let synced = 0;
 
   for (const operation of operations) {
     try {
       await syncOperation(userId, operation);
-      await db.syncQueue.delete(operation.id);
+      await db.syncQueue.delete([userId, operation.id]);
       synced += 1;
     } catch (error) {
-      console.error('Cloud push failed', operation.type, error);
-      break;
+      if (error instanceof Error && error.message === 'Malformed sync payload') {
+        console.error('Dropping malformed queued operation', operation.id);
+        await db.syncQueue.delete([userId, operation.id]);
+        continue;
+      }
+      throw error;
     }
   }
 
   return synced;
 };
 
-export const getPendingCloudOperations = async (): Promise<number> => db.syncQueue.count();
+export const getPendingCloudOperations = async (ownerId: string): Promise<number> => db.syncQueue.where('ownerId').equals(ownerId).count();
 
 export const uploadAllLocalDataToCloud = async (userId: string): Promise<void> => {
-  const workouts = await db.workouts.toArray();
-  const goals = await db.goals.toArray();
-  const customExercises = await db.customExercises.toArray();
-  const bodyweightEntries = await db.bodyweightEntries.toArray();
-  const settings = await db.appSettings.get('app');
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return;
+  }
+
+  const workouts = await db.workouts.where('ownerId').equals(userId).toArray();
+  const goals = await db.goals.where('ownerId').equals(userId).toArray();
+  const customExercises = await db.customExercises.where('ownerId').equals(userId).toArray();
+  const bodyweightEntries = await db.bodyweightEntries.where('ownerId').equals(userId).toArray();
+  const settings = await db.appSettings.get([userId, 'app']);
+
+  const [remoteWorkoutsRes, remoteGoalsRes, remoteCustomRes, remoteBodyweightRes] = await Promise.all([
+    supabase.from('workouts').select('id').eq('user_id', userId),
+    supabase.from('goals').select('id').eq('user_id', userId),
+    supabase.from('custom_exercises').select('id').eq('user_id', userId),
+    supabase.from('bodyweight_history').select('id').eq('user_id', userId)
+  ]);
+
+  if (remoteWorkoutsRes.error || remoteGoalsRes.error || remoteCustomRes.error || remoteBodyweightRes.error) {
+    throw new Error(
+      remoteWorkoutsRes.error?.message ||
+      remoteGoalsRes.error?.message ||
+      remoteCustomRes.error?.message ||
+      remoteBodyweightRes.error?.message ||
+      'Failed to compare local and remote data before upload'
+    );
+  }
+
+  const localWorkoutIds = new Set(workouts.map((entry) => entry.id));
+  for (const row of (remoteWorkoutsRes.data ?? []) as Array<{ id: string }>) {
+    if (!localWorkoutIds.has(row.id)) {
+      await syncOperation(userId, {
+        id: crypto.randomUUID(),
+        ownerId: userId,
+        type: 'DELETE_WORKOUT',
+        payload: JSON.stringify({ id: row.id }),
+        createdAt: new Date().toISOString()
+      });
+    }
+  }
+
+  const localGoalIds = new Set(goals.map((entry) => entry.id));
+  for (const row of (remoteGoalsRes.data ?? []) as Array<{ id: string }>) {
+    if (!localGoalIds.has(row.id)) {
+      await syncOperation(userId, {
+        id: crypto.randomUUID(),
+        ownerId: userId,
+        type: 'DELETE_GOAL',
+        payload: JSON.stringify({ id: row.id }),
+        createdAt: new Date().toISOString()
+      });
+    }
+  }
+
+  const localCustomIds = new Set(customExercises.map((entry) => entry.id));
+  for (const row of (remoteCustomRes.data ?? []) as Array<{ id: string }>) {
+    if (!localCustomIds.has(row.id)) {
+      await syncOperation(userId, {
+        id: crypto.randomUUID(),
+        ownerId: userId,
+        type: 'DELETE_CUSTOM_EXERCISE',
+        payload: JSON.stringify({ id: row.id }),
+        createdAt: new Date().toISOString()
+      });
+    }
+  }
+
+  const localBodyweightIds = new Set(bodyweightEntries.map((entry) => entry.id));
+  for (const row of (remoteBodyweightRes.data ?? []) as Array<{ id: string }>) {
+    if (!localBodyweightIds.has(row.id)) {
+      await syncOperation(userId, {
+        id: crypto.randomUUID(),
+        ownerId: userId,
+        type: 'DELETE_BODYWEIGHT',
+        payload: JSON.stringify({ id: row.id }),
+        createdAt: new Date().toISOString()
+      });
+    }
+  }
 
   for (const workout of workouts) {
     await syncOperation(userId, {
       id: crypto.randomUUID(),
+      ownerId: userId,
       type: 'UPDATE_WORKOUT',
       payload: JSON.stringify(workout),
       createdAt: new Date().toISOString()
@@ -435,6 +592,7 @@ export const uploadAllLocalDataToCloud = async (userId: string): Promise<void> =
   for (const goal of goals) {
     await syncOperation(userId, {
       id: crypto.randomUUID(),
+      ownerId: userId,
       type: 'UPSERT_GOAL',
       payload: JSON.stringify(goal),
       createdAt: new Date().toISOString()
@@ -444,6 +602,7 @@ export const uploadAllLocalDataToCloud = async (userId: string): Promise<void> =
   for (const exercise of customExercises) {
     await syncOperation(userId, {
       id: crypto.randomUUID(),
+      ownerId: userId,
       type: 'UPSERT_CUSTOM_EXERCISE',
       payload: JSON.stringify(exercise),
       createdAt: new Date().toISOString()
@@ -453,6 +612,7 @@ export const uploadAllLocalDataToCloud = async (userId: string): Promise<void> =
   for (const entry of bodyweightEntries) {
     await syncOperation(userId, {
       id: crypto.randomUUID(),
+      ownerId: userId,
       type: 'UPSERT_BODYWEIGHT',
       payload: JSON.stringify(entry),
       createdAt: new Date().toISOString()
@@ -462,6 +622,7 @@ export const uploadAllLocalDataToCloud = async (userId: string): Promise<void> =
   if (settings) {
     await syncOperation(userId, {
       id: crypto.randomUUID(),
+      ownerId: userId,
       type: 'UPDATE_SETTINGS',
       payload: JSON.stringify(settings.value),
       createdAt: new Date().toISOString()

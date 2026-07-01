@@ -1,9 +1,10 @@
 import { create } from 'zustand';
-import { db } from '../database/db';
+import { db, LOCAL_ANON_OWNER_ID } from '../database/db';
 import { generateDemoWorkouts, DEMO_GOALS } from '../data/demoData';
 import { buildAnalytics, type AnalyticsData } from '../services/metrics';
 import { enqueueSync, flushSyncQueue, getLastSyncTimestamp } from '../services/syncService';
 import { pullCloudChanges, pushQueuedCloudChanges } from '../services/cloudSyncService';
+import { acquireSyncLease, releaseSyncLease } from '../services/syncLockService';
 import type { BodyweightEntry } from '../database/db';
 import { getSupabaseClient } from '../lib/supabase';
 import type {
@@ -32,6 +33,7 @@ interface BackupPayload {
 }
 
 interface AppStore {
+  ownerId: string;
   workouts: WorkoutSession[];
   goals: Goal[];
   bodyweightEntries: BodyweightEntry[];
@@ -47,6 +49,7 @@ interface AppStore {
   activeWorkout: ActiveWorkout | null;
   lastSummary: WorkoutSummary | null;
   initialize: () => Promise<void>;
+  setOwnerContext: (ownerId: string) => Promise<void>;
   addWorkout: (workout: WorkoutSession) => Promise<void>;
   updateWorkout: (workout: WorkoutSession) => Promise<void>;
   deleteWorkout: (workoutId: string) => Promise<void>;
@@ -79,6 +82,8 @@ const EMPTY_ANALYTICS = buildAnalytics([]);
 const DEMO_ID_KEY = 'titan-track-demo-workout-ids';
 const MAX_BACKUP_SNAPSHOTS = 20;
 
+const getDemoIdsKey = (ownerId: string) => `${DEMO_ID_KEY}-${ownerId}`;
+
 const recalculate = (workouts: WorkoutSession[]) => buildAnalytics(workouts);
 
 const mergeExerciseCatalog = (customExercises: ExerciseDefinition[]) => {
@@ -102,53 +107,58 @@ const buildBackupPayload = (state: Pick<AppStore, 'workouts' | 'settings' | 'goa
   version: '1.1.0'
 });
 
-const persistActiveWorkoutSnapshot = async (activeWorkout: ActiveWorkout | null) => {
+const persistActiveWorkoutSnapshot = async (ownerId: string, activeWorkout: ActiveWorkout | null) => {
   if (!activeWorkout) {
-    await db.activeWorkoutSnapshots.delete('current');
+    await db.activeWorkoutSnapshots.delete([ownerId, 'current']);
     return;
   }
 
   await db.activeWorkoutSnapshots.put({
+    ownerId,
     id: 'current',
     payload: JSON.stringify(activeWorkout),
     updatedAt: new Date().toISOString()
   });
 };
 
-const maybeCreateAutoBackup = async (state: Pick<AppStore, 'settings' | 'workouts' | 'goals' | 'customExercises' | 'bodyweightEntries'>, trigger: string) => {
+const maybeCreateAutoBackup = async (
+  state: Pick<AppStore, 'ownerId' | 'settings' | 'workouts' | 'goals' | 'customExercises' | 'bodyweightEntries'>,
+  trigger: string
+) => {
   if (!state.settings.cloudSyncEnabled) {
     return;
   }
 
   const snapshot = {
     id: crypto.randomUUID(),
+    ownerId: state.ownerId,
     trigger,
     payload: JSON.stringify(buildBackupPayload(state)),
     createdAt: new Date().toISOString()
   };
 
   await db.backupSnapshots.put(snapshot);
-  await enqueueSync('BACKUP_SNAPSHOT', {
+  await enqueueSync(state.ownerId, 'BACKUP_SNAPSHOT', {
     id: snapshot.id,
     trigger: snapshot.trigger,
     createdAt: snapshot.createdAt
   });
 
-  const staleSnapshots = await db.backupSnapshots.orderBy('createdAt').toArray();
+  const staleSnapshots = await db.backupSnapshots.where('ownerId').equals(state.ownerId).sortBy('createdAt');
   if (staleSnapshots.length > MAX_BACKUP_SNAPSHOTS) {
     const staleIds = staleSnapshots.slice(0, staleSnapshots.length - MAX_BACKUP_SNAPSHOTS).map((entry) => entry.id);
-    await db.backupSnapshots.bulkDelete(staleIds);
+    await db.backupSnapshots.bulkDelete(staleIds.map((id) => [state.ownerId, id]));
   }
 };
 
-const hydrateStateFromDb = async () => {
-  const workouts = (await db.workouts.toArray()).sort((a, b) => (a.date > b.date ? 1 : -1));
-  const settingsRecord = await db.appSettings.get('app');
-  const goals = await db.goals.toArray();
-  const customExercises = (await db.customExercises.toArray())
+const hydrateStateFromDb = async (ownerId: string) => {
+  const workouts = (await db.workouts.where('ownerId').equals(ownerId).toArray()).sort((a, b) => (a.date > b.date ? 1 : -1));
+  const settingsRecord = await db.appSettings.get([ownerId, 'app']);
+  const goals = await db.goals.where('ownerId').equals(ownerId).toArray();
+  const customExercises = (await db.customExercises.where('ownerId').equals(ownerId).toArray())
     .map((exercise) => ({ ...exercise, isCustom: true }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const bodyweightEntries = (await db.bodyweightEntries.toArray()).sort((a, b) => (a.date > b.date ? 1 : -1));
+  const bodyweightEntries = (await db.bodyweightEntries.where('ownerId').equals(ownerId).toArray()).sort((a, b) => (a.date > b.date ? 1 : -1));
 
   return {
     workouts,
@@ -229,6 +239,7 @@ const computeNewPRs = (session: WorkoutSession, existingPRs: PersonalRecord[]): 
 };
 
 export const useAppStore = create<AppStore>((set, get) => ({
+  ownerId: LOCAL_ANON_OWNER_ID,
   workouts: [],
   goals: [],
   bodyweightEntries: [],
@@ -244,14 +255,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   lastSummary: null,
 
   initialize: async () => {
+    await get().setOwnerContext(get().ownerId || LOCAL_ANON_OWNER_ID);
+  },
+
+  setOwnerContext: async (ownerId) => {
     try {
-      const existingWorkouts = await db.workouts.toArray();
-      const appSettingsRecord = await db.appSettings.get('app');
+      const existingWorkouts = await db.workouts.where('ownerId').equals(ownerId).toArray();
+      const appSettingsRecord = await db.appSettings.get([ownerId, 'app']);
       const legacySettings = (await db.settings.toArray())[0];
       const settings = normalizeSettings(appSettingsRecord?.value ?? legacySettings);
-      const goals = await db.goals.toArray();
-      const bodyweightEntries = (await db.bodyweightEntries.toArray()).sort((a, b) => (a.date > b.date ? 1 : -1));
-      const activeSnapshot = await db.activeWorkoutSnapshots.get('current');
+      const goals = await db.goals.where('ownerId').equals(ownerId).toArray();
+      const bodyweightEntries = (await db.bodyweightEntries.where('ownerId').equals(ownerId).toArray()).sort((a, b) => (a.date > b.date ? 1 : -1));
+      const activeSnapshot = await db.activeWorkoutSnapshots.get([ownerId, 'current']);
       const activeWorkout = (() => {
         if (!activeSnapshot) {
           return null;
@@ -262,19 +277,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
           return null;
         }
       })();
-      const customExercises = (await db.customExercises.toArray())
+      const customExercises = (await db.customExercises.where('ownerId').equals(ownerId).toArray())
         .map((exercise) => ({ ...exercise, isCustom: true }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      await db.appSettings.put({ id: 'app', value: settings, updatedAt: new Date().toISOString() });
+      await db.appSettings.put({ ownerId, id: 'app', value: settings, updatedAt: new Date().toISOString() });
 
       if (existingWorkouts.length === 0 && settings.useDemoData) {
-        const demoWorkouts = generateDemoWorkouts();
+        const demoWorkouts = generateDemoWorkouts().map((workout) => ({ ...workout, ownerId }));
         await db.workouts.bulkPut(demoWorkouts);
-        await db.goals.bulkPut(DEMO_GOALS);
-        localStorage.setItem(DEMO_ID_KEY, JSON.stringify(demoWorkouts.map((workout) => workout.id)));
+        await db.goals.bulkPut(DEMO_GOALS.map((goal) => ({ ...goal, ownerId })));
+        localStorage.setItem(getDemoIdsKey(ownerId), JSON.stringify(demoWorkouts.map((workout) => workout.id)));
 
         set({
+          ownerId,
           workouts: demoWorkouts,
           settings,
           goals: DEMO_GOALS,
@@ -290,6 +306,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const sorted = existingWorkouts.sort((a, b) => (a.date > b.date ? 1 : -1));
       set({
+        ownerId,
         workouts: sorted,
         settings,
         goals: goals.length ? goals : settings.useDemoData ? DEMO_GOALS : [],
@@ -303,6 +320,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       set({
         error: error instanceof Error ? `Initialization failed: ${error.message}` : 'Initialization failed',
+        ownerId,
         initialized: true
       });
     }
@@ -310,9 +328,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   addWorkout: async (workout) => {
     try {
-      const payload = { ...workout, updatedAt: new Date().toISOString() };
+      const ownerId = get().ownerId;
+      const payload = { ...workout, ownerId, updatedAt: new Date().toISOString() };
       await db.workouts.put(payload);
-      await enqueueSync('CREATE_WORKOUT', payload);
+      await enqueueSync(ownerId, 'CREATE_WORKOUT', workout);
 
       const workouts = [...get().workouts, payload].sort((a, b) => (a.date > b.date ? 1 : -1));
       set({ workouts, analytics: recalculate(workouts), error: undefined });
@@ -328,9 +347,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   updateWorkout: async (workout) => {
     try {
-      const payload = { ...workout, updatedAt: new Date().toISOString() };
+      const ownerId = get().ownerId;
+      const payload = { ...workout, ownerId, updatedAt: new Date().toISOString() };
       await db.workouts.put(payload);
-      await enqueueSync('UPDATE_WORKOUT', payload);
+      await enqueueSync(ownerId, 'UPDATE_WORKOUT', workout);
 
       const workouts = get().workouts.map((item) => (item.id === workout.id ? payload : item));
       set({ workouts, analytics: recalculate(workouts), error: undefined });
@@ -346,8 +366,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   deleteWorkout: async (workoutId) => {
     try {
-      await db.workouts.delete(workoutId);
-      await enqueueSync('DELETE_WORKOUT', { id: workoutId });
+      const ownerId = get().ownerId;
+      await db.workouts.delete([ownerId, workoutId]);
+      await enqueueSync(ownerId, 'DELETE_WORKOUT', { id: workoutId });
       const workouts = get().workouts.filter((w) => w.id !== workoutId);
       set({ workouts, analytics: recalculate(workouts), error: undefined });
       await maybeCreateAutoBackup(get(), 'DELETE_WORKOUT');
@@ -362,9 +383,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   updateSettings: async (settings) => {
     try {
+      const ownerId = get().ownerId;
       const normalized = normalizeSettings(settings);
-      await db.appSettings.put({ id: 'app', value: normalized, updatedAt: new Date().toISOString() });
-      await enqueueSync('UPDATE_SETTINGS', normalized);
+      await db.appSettings.put({ ownerId, id: 'app', value: normalized, updatedAt: new Date().toISOString() });
+      await enqueueSync(ownerId, 'UPDATE_SETTINGS', normalized);
       set({ settings: normalized, error: undefined });
       await maybeCreateAutoBackup(get(), 'UPDATE_SETTINGS');
       if (get().isOnline) {
@@ -378,8 +400,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   upsertGoal: async (goal) => {
     try {
-      await db.goals.put(goal);
-      await enqueueSync('UPSERT_GOAL', goal);
+      const ownerId = get().ownerId;
+      await db.goals.put({ ...goal, ownerId });
+      await enqueueSync(ownerId, 'UPSERT_GOAL', goal);
 
       const goals = get().goals.some((item) => item.id === goal.id)
         ? get().goals.map((item) => (item.id === goal.id ? goal : item))
@@ -398,8 +421,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   removeGoal: async (goalId) => {
     try {
-      await db.goals.delete(goalId);
-      await enqueueSync('DELETE_GOAL', { id: goalId });
+      const ownerId = get().ownerId;
+      await db.goals.delete([ownerId, goalId]);
+      await enqueueSync(ownerId, 'DELETE_GOAL', { id: goalId });
       set({ goals: get().goals.filter((goal) => goal.id !== goalId), error: undefined });
       await maybeCreateAutoBackup(get(), 'DELETE_GOAL');
       if (get().isOnline) {
@@ -412,6 +436,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addCustomExercise: async (exercise) => {
+    const ownerId = get().ownerId;
     const nowIso = new Date().toISOString();
     const trimmedName = exercise.name.trim();
     if (!trimmedName) {
@@ -434,8 +459,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       updatedAt: nowIso
     };
 
-    await db.customExercises.put(created);
-    await enqueueSync('UPSERT_CUSTOM_EXERCISE', created);
+    await db.customExercises.put({ ...created, ownerId });
+    await enqueueSync(ownerId, 'UPSERT_CUSTOM_EXERCISE', created);
 
     const customExercises = [...get().customExercises, created].sort((a, b) => a.name.localeCompare(b.name));
     set({ customExercises, exerciseCatalog: mergeExerciseCatalog(customExercises), error: undefined });
@@ -447,6 +472,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   updateCustomExercise: async (exerciseId, updates) => {
+    const ownerId = get().ownerId;
     const current = get().customExercises.find((exercise) => exercise.id === exerciseId);
     if (!current) {
       throw new Error('Exercise not found.');
@@ -472,8 +498,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       isCustom: true
     };
 
-    await db.customExercises.put(updated);
-    await enqueueSync('UPSERT_CUSTOM_EXERCISE', updated);
+    await db.customExercises.put({ ...updated, ownerId });
+    await enqueueSync(ownerId, 'UPSERT_CUSTOM_EXERCISE', updated);
 
     const customExercises = get().customExercises
       .map((exercise) => (exercise.id === exerciseId ? updated : exercise))
@@ -486,8 +512,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   deleteCustomExercise: async (exerciseId) => {
-    await db.customExercises.delete(exerciseId);
-    await enqueueSync('DELETE_CUSTOM_EXERCISE', { id: exerciseId });
+    const ownerId = get().ownerId;
+    await db.customExercises.delete([ownerId, exerciseId]);
+    await enqueueSync(ownerId, 'DELETE_CUSTOM_EXERCISE', { id: exerciseId });
     const customExercises = get().customExercises.filter((exercise) => exercise.id !== exerciseId);
     set({ customExercises, exerciseCatalog: mergeExerciseCatalog(customExercises), error: undefined });
     await maybeCreateAutoBackup(get(), 'DELETE_CUSTOM_EXERCISE');
@@ -505,27 +532,43 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return;
     }
     set({ syncing: true, error: undefined });
+    let leaseOwnerId: string | null = null;
+    let leaseToken: string | null = null;
     try {
       let synced = 0;
       const supabase = getSupabaseClient();
       const { data: userData } = supabase ? await supabase.auth.getUser() : { data: { user: null } };
+      const ownerId = userData.user?.id ?? get().ownerId;
+
+      leaseOwnerId = ownerId;
+      leaseToken = crypto.randomUUID();
+      const leaseAcquired = await acquireSyncLease(ownerId, leaseToken);
+      if (!leaseAcquired) {
+        set({ syncing: false });
+        return;
+      }
 
       if (userData.user) {
         synced += await pushQueuedCloudChanges(userData.user.id);
         await pullCloudChanges(userData.user.id);
       } else {
-        synced += await flushSyncQueue();
+        synced += await flushSyncQueue(ownerId);
       }
 
-      const hydrated = await hydrateStateFromDb();
+      const hydrated = await hydrateStateFromDb(ownerId);
       set({
         ...hydrated,
+        ownerId,
         syncing: false,
         lastSync: synced > 0 || Boolean(userData.user) ? new Date().toISOString() : get().lastSync,
         error: undefined
       });
     } catch (error) {
       set({ syncing: false, error: error instanceof Error ? `Sync failed: ${error.message}` : 'Sync failed.' });
+    } finally {
+      if (leaseOwnerId && leaseToken) {
+        await releaseSyncLease(leaseOwnerId, leaseToken);
+      }
     }
   },
 
@@ -564,7 +607,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     const escape = (value: string | number | undefined) => {
       const raw = String(value ?? '');
-      return `"${raw.split('"').join('""')}"`;
+      const sanitized = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+      return `"${sanitized.split('"').join('""')}"`;
     };
 
     const rows = get().workouts.flatMap((workout) =>
@@ -595,6 +639,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   importBackup: async (json) => {
+    const ownerId = get().ownerId;
+    const previous = {
+      workouts: get().workouts,
+      goals: get().goals,
+      customExercises: get().customExercises,
+      bodyweightEntries: get().bodyweightEntries
+    };
+
     const payload = JSON.parse(json) as Partial<BackupPayload>;
     if (!payload.workouts || !payload.settings || !payload.goals) {
       throw new Error('Invalid backup format');
@@ -625,22 +677,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }));
 
     await db.transaction('rw', [db.workouts, db.appSettings, db.goals, db.customExercises, db.bodyweightEntries, db.activeWorkoutSnapshots], async () => {
-      await db.workouts.clear();
-      await db.appSettings.clear();
-      await db.goals.clear();
-      await db.customExercises.clear();
-      await db.bodyweightEntries.clear();
-      await db.activeWorkoutSnapshots.clear();
-      await db.workouts.bulkPut(workouts);
-      await db.appSettings.put({ id: 'app', value: settings, updatedAt: new Date().toISOString() });
-      await db.goals.bulkPut(goals);
+      const existingWorkoutKeys = (await db.workouts.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const existingGoalKeys = (await db.goals.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const existingExerciseKeys = (await db.customExercises.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const existingBodyweightKeys = (await db.bodyweightEntries.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+
+      if (existingWorkoutKeys.length > 0) await db.workouts.bulkDelete(existingWorkoutKeys);
+      if (existingGoalKeys.length > 0) await db.goals.bulkDelete(existingGoalKeys);
+      if (existingExerciseKeys.length > 0) await db.customExercises.bulkDelete(existingExerciseKeys);
+      if (existingBodyweightKeys.length > 0) await db.bodyweightEntries.bulkDelete(existingBodyweightKeys);
+      await db.activeWorkoutSnapshots.delete([ownerId, 'current']);
+
+      await db.workouts.bulkPut(workouts.map((entry) => ({ ...entry, ownerId })));
+      await db.appSettings.put({ ownerId, id: 'app', value: settings, updatedAt: new Date().toISOString() });
+      await db.goals.bulkPut(goals.map((entry) => ({ ...entry, ownerId })));
       if (customExercises.length > 0) {
-        await db.customExercises.bulkPut(customExercises);
+        await db.customExercises.bulkPut(customExercises.map((entry) => ({ ...entry, ownerId })));
       }
       if (bodyweightEntries.length > 0) {
-        await db.bodyweightEntries.bulkPut(bodyweightEntries);
+        await db.bodyweightEntries.bulkPut(bodyweightEntries.map((entry) => ({ ...entry, ownerId })));
       }
     });
+
+    const importedWorkoutIds = new Set(workouts.map((entry) => entry.id));
+    const importedGoalIds = new Set(goals.map((entry) => entry.id));
+    const importedExerciseIds = new Set(customExercises.map((entry) => entry.id));
+    const importedBodyweightIds = new Set(bodyweightEntries.map((entry) => entry.id));
+
+    for (const entry of previous.workouts) {
+      if (!importedWorkoutIds.has(entry.id)) {
+        await enqueueSync(ownerId, 'DELETE_WORKOUT', { id: entry.id });
+      }
+    }
+    for (const entry of previous.goals) {
+      if (!importedGoalIds.has(entry.id)) {
+        await enqueueSync(ownerId, 'DELETE_GOAL', { id: entry.id });
+      }
+    }
+    for (const entry of previous.customExercises) {
+      if (!importedExerciseIds.has(entry.id)) {
+        await enqueueSync(ownerId, 'DELETE_CUSTOM_EXERCISE', { id: entry.id });
+      }
+    }
+    for (const entry of previous.bodyweightEntries) {
+      if (!importedBodyweightIds.has(entry.id)) {
+        await enqueueSync(ownerId, 'DELETE_BODYWEIGHT', { id: entry.id });
+      }
+    }
+
+    for (const entry of workouts) {
+      await enqueueSync(ownerId, 'UPDATE_WORKOUT', entry);
+    }
+    for (const entry of goals) {
+      await enqueueSync(ownerId, 'UPSERT_GOAL', entry);
+    }
+    for (const entry of customExercises) {
+      await enqueueSync(ownerId, 'UPSERT_CUSTOM_EXERCISE', entry);
+    }
+    for (const entry of bodyweightEntries) {
+      await enqueueSync(ownerId, 'UPSERT_BODYWEIGHT', entry);
+    }
+    await enqueueSync(ownerId, 'UPDATE_SETTINGS', settings);
 
     set({
       workouts,
@@ -654,17 +751,47 @@ export const useAppStore = create<AppStore>((set, get) => ({
       error: undefined
     });
     await maybeCreateAutoBackup(get(), 'IMPORT_BACKUP');
+    if (get().isOnline) {
+      void get().attemptSync();
+    }
   },
 
   clearAllData: async () => {
+    const ownerId = get().ownerId;
+    const existing = {
+      workouts: get().workouts,
+      goals: get().goals,
+      customExercises: get().customExercises,
+      bodyweightEntries: get().bodyweightEntries
+    };
+
     await db.transaction('rw', [db.workouts, db.goals, db.customExercises, db.bodyweightEntries, db.activeWorkoutSnapshots, db.backupSnapshots], async () => {
-      await db.workouts.clear();
-      await db.goals.clear();
-      await db.customExercises.clear();
-      await db.bodyweightEntries.clear();
-      await db.activeWorkoutSnapshots.clear();
-      await db.backupSnapshots.clear();
+      const workoutKeys = (await db.workouts.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const goalKeys = (await db.goals.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const exerciseKeys = (await db.customExercises.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const bodyweightKeys = (await db.bodyweightEntries.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const backupKeys = (await db.backupSnapshots.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+
+      if (workoutKeys.length > 0) await db.workouts.bulkDelete(workoutKeys);
+      if (goalKeys.length > 0) await db.goals.bulkDelete(goalKeys);
+      if (exerciseKeys.length > 0) await db.customExercises.bulkDelete(exerciseKeys);
+      if (bodyweightKeys.length > 0) await db.bodyweightEntries.bulkDelete(bodyweightKeys);
+      if (backupKeys.length > 0) await db.backupSnapshots.bulkDelete(backupKeys);
+      await db.activeWorkoutSnapshots.delete([ownerId, 'current']);
     });
+
+    for (const workout of existing.workouts) {
+      await enqueueSync(ownerId, 'DELETE_WORKOUT', { id: workout.id });
+    }
+    for (const goal of existing.goals) {
+      await enqueueSync(ownerId, 'DELETE_GOAL', { id: goal.id });
+    }
+    for (const exercise of existing.customExercises) {
+      await enqueueSync(ownerId, 'DELETE_CUSTOM_EXERCISE', { id: exercise.id });
+    }
+    for (const entry of existing.bodyweightEntries) {
+      await enqueueSync(ownerId, 'DELETE_BODYWEIGHT', { id: entry.id });
+    }
     set({
       workouts: [],
       goals: [],
@@ -675,13 +802,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activeWorkout: null,
       error: undefined
     });
-    localStorage.removeItem(DEMO_ID_KEY);
+    localStorage.removeItem(getDemoIdsKey(ownerId));
+    if (get().isOnline) {
+      void get().attemptSync();
+    }
   },
 
   clearDemoData: async () => {
+    const ownerId = get().ownerId;
     const demoIds = (() => {
       try {
-        const raw = localStorage.getItem(DEMO_ID_KEY);
+        const raw = localStorage.getItem(getDemoIdsKey(ownerId));
         return raw ? (JSON.parse(raw) as string[]) : [];
       } catch {
         return [];
@@ -689,20 +820,43 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })();
 
     if (demoIds.length > 0) {
-      await db.workouts.bulkDelete(demoIds);
+      for (const id of demoIds) {
+        await enqueueSync(ownerId, 'DELETE_WORKOUT', { id });
+      }
+      await db.workouts.bulkDelete(demoIds.map((id) => [ownerId, id]));
       const workouts = get().workouts.filter((workout) => !demoIds.includes(workout.id));
       set({ workouts, analytics: recalculate(workouts), error: undefined });
+      if (get().isOnline) {
+        void get().attemptSync();
+      }
       return;
     }
 
+    const existingWorkoutIds = get().workouts.map((workout) => workout.id);
+    const existingGoalIds = get().goals.map((goal) => goal.id);
+
     await db.transaction('rw', [db.workouts, db.goals], async () => {
-      await db.workouts.clear();
-      await db.goals.clear();
+      const workoutKeys = (await db.workouts.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      const goalKeys = (await db.goals.where('ownerId').equals(ownerId).primaryKeys()) as [string, string][];
+      if (workoutKeys.length > 0) await db.workouts.bulkDelete(workoutKeys);
+      if (goalKeys.length > 0) await db.goals.bulkDelete(goalKeys);
     });
+
+    for (const id of existingWorkoutIds) {
+      await enqueueSync(ownerId, 'DELETE_WORKOUT', { id });
+    }
+    for (const id of existingGoalIds) {
+      await enqueueSync(ownerId, 'DELETE_GOAL', { id });
+    }
+
     set({ workouts: [], goals: [], analytics: recalculate([]), error: undefined });
+    if (get().isOnline) {
+      void get().attemptSync();
+    }
   },
 
   addBodyweightEntry: async (entry) => {
+    const ownerId = get().ownerId;
     const nowIso = new Date().toISOString();
     const created: BodyweightEntry = {
       id: crypto.randomUUID(),
@@ -713,8 +867,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       updatedAt: nowIso
     };
 
-    await db.bodyweightEntries.put(created);
-    await enqueueSync('UPSERT_BODYWEIGHT', created);
+    await db.bodyweightEntries.put({ ...created, ownerId });
+    await enqueueSync(ownerId, 'UPSERT_BODYWEIGHT', {
+      id: created.id,
+      date: created.date,
+      weight: created.weight,
+      note: created.note,
+      createdAt: created.createdAt,
+      updatedAt: created.updatedAt
+    });
     const bodyweightEntries = [...get().bodyweightEntries, created].sort((a, b) => (a.date > b.date ? 1 : -1));
     set({ bodyweightEntries, error: undefined });
     await maybeCreateAutoBackup(get(), 'UPSERT_BODYWEIGHT');
@@ -725,9 +886,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   updateBodyweightEntry: async (entry) => {
+    const ownerId = get().ownerId;
     const updated: BodyweightEntry = { ...entry, updatedAt: new Date().toISOString() };
-    await db.bodyweightEntries.put(updated);
-    await enqueueSync('UPSERT_BODYWEIGHT', updated);
+    await db.bodyweightEntries.put({ ...updated, ownerId });
+    await enqueueSync(ownerId, 'UPSERT_BODYWEIGHT', {
+      id: updated.id,
+      date: updated.date,
+      weight: updated.weight,
+      note: updated.note,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt
+    });
     const bodyweightEntries = get().bodyweightEntries.map((item) => (item.id === updated.id ? updated : item));
     set({ bodyweightEntries, error: undefined });
     await maybeCreateAutoBackup(get(), 'UPSERT_BODYWEIGHT');
@@ -737,8 +906,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   deleteBodyweightEntry: async (entryId) => {
-    await db.bodyweightEntries.delete(entryId);
-    await enqueueSync('DELETE_BODYWEIGHT', { id: entryId });
+    const ownerId = get().ownerId;
+    await db.bodyweightEntries.delete([ownerId, entryId]);
+    await enqueueSync(ownerId, 'DELETE_BODYWEIGHT', { id: entryId });
     const bodyweightEntries = get().bodyweightEntries.filter((entry) => entry.id !== entryId);
     set({ bodyweightEntries, error: undefined });
     await maybeCreateAutoBackup(get(), 'DELETE_BODYWEIGHT');
@@ -825,12 +995,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       exercises
     };
     set({ activeWorkout });
-    void persistActiveWorkoutSnapshot(activeWorkout);
+    void persistActiveWorkoutSnapshot(get().ownerId, activeWorkout);
   },
 
   updateActiveWorkout: (workout) => {
     set({ activeWorkout: workout });
-    void persistActiveWorkoutSnapshot(workout);
+    void persistActiveWorkoutSnapshot(get().ownerId, workout);
   },
 
   finishActiveWorkout: async (notes) => {
@@ -908,7 +1078,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       };
 
       set({ activeWorkout: null, lastSummary: summary, error: undefined });
-      await persistActiveWorkoutSnapshot(null);
+      await persistActiveWorkoutSnapshot(get().ownerId, null);
       await maybeCreateAutoBackup(get(), 'FINISH_WORKOUT');
       return true;
     } catch (error) {
@@ -919,7 +1089,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   discardActiveWorkout: () => {
     set({ activeWorkout: null });
-    void persistActiveWorkoutSnapshot(null);
+    void persistActiveWorkoutSnapshot(get().ownerId, null);
   },
 
   clearLastSummary: () => {

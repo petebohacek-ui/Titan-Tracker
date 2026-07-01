@@ -1,13 +1,16 @@
 import { useEffect } from 'react';
 import { useAppStore } from './useAppStore';
 import { useAuthStore } from './useAuthStore';
+import { LOCAL_ANON_OWNER_ID } from '../database/db';
 
 export const useAppBootstrap = () => {
   const initialize = useAppStore((state) => state.initialize);
+  const setOwnerContext = useAppStore((state) => state.setOwnerContext);
   const attemptSync = useAppStore((state) => state.attemptSync);
   const setOnline = useAppStore((state) => state.setOnline);
   const initializeAuth = useAuthStore((state) => state.initializeAuth);
   const session = useAuthStore((state) => state.session);
+  const user = useAuthStore((state) => state.user);
 
   useEffect(() => {
     void initialize();
@@ -45,4 +48,8 @@ export const useAppBootstrap = () => {
       void attemptSync();
     }
   }, [attemptSync, session]);
+
+  useEffect(() => {
+    void setOwnerContext(user?.id ?? LOCAL_ANON_OWNER_ID);
+  }, [setOwnerContext, user?.id]);
 };

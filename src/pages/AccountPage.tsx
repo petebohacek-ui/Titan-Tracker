@@ -131,18 +131,17 @@ export const AccountPage = () => {
               <input className="field" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
             </label>
             <div className="md:col-span-2 flex flex-wrap gap-2">
-              <button type="button" className="btn-primary" onClick={() => void handleSignIn()} disabled={loading || !authAvailable}>Sign In</button>
-              <button type="button" className="btn-subtle" onClick={() => void handleSignUp()} disabled={loading || !authAvailable}>Sign Up</button>
-              <button type="button" className="btn-subtle" onClick={() => void handleForgotPassword()} disabled={loading || !authAvailable}>Forgot Password</button>
+              <button type="button" className="btn-primary" onClick={() => void handleSignIn()} disabled={loading}>Sign In</button>
+              <button type="button" className="btn-subtle" onClick={() => void handleSignUp()} disabled={loading}>Sign Up</button>
+              <button type="button" className="btn-subtle" onClick={() => void handleForgotPassword()} disabled={loading}>Forgot Password</button>
             </div>
             <label className="space-y-1 text-sm md:col-span-2">
               <span className="muted">New Password (after reset link)</span>
               <div className="flex gap-2">
                 <input className="field" type="password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
-                <button type="button" className="btn-subtle" onClick={() => void handleResetPassword()} disabled={loading || !authAvailable}>Reset</button>
+                <button type="button" className="btn-subtle" onClick={() => void handleResetPassword()} disabled={loading}>Reset</button>
               </div>
             </label>
-            {!authAvailable && <p className="muted text-sm md:col-span-2">Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable account creation.</p>}
           </div>
         ) : (
           <div className="space-y-2">
